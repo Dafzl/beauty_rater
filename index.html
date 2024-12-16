@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beauty Rater - Rate Men</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+        }
+        .image-container {
+            display: flex;
+            justify-content: center;
+            margin: 20px;
+        }
+        .image-container img {
+            margin: 0 20px;
+            max-width: 300px;
+            max-height: 400px;
+            object-fit: contain;
+        }
+        .buttons {
+            margin-top: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 0 10px;
+            cursor: pointer;
+        }
+        #errorMessage {
+            color: red;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Beauty Rater - Rate Men</h1>
+    <p>Select the most beautiful image:</p>
+    <div id="errorMessage"></div>
+
+    <div class="image-container">
+        <img id="leftImage" src="" alt="Left Image" width="300">
+        <img id="rightImage" src="" alt="Right Image" width="300">
+    </div>
+
+    <div class="buttons">
+        <button id="leftButton">Rate Left</button>
+        <button id="rightButton">Rate Right</button>
+    </div>
+
+    <script type="module">
+        // Import Supabase directly as a module
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+        // Initialize Supabase
+        const supabaseUrl = 'https://ufsgumosiddizzjekylh.supabase.co';
+        const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVmc2d1bW9zaWRkaXp6amVreWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzQzNjcwNTksImV4cCI6MjA0OTk0MzA1OX0.Mn9dUPVRRbn1FCz4bu0CXrPAOGBD1ksdPF8LDTdC8zA';
+        const supabase = createClient(supabaseUrl, supabaseKey);
+
+        let leftImage = null;
+        let rightImage = null;
+
+        // Display error message
+        function showError(message) {
+            const errorElement = document.getElementById('errorMessage');
+            errorElement.textContent = message;
+            console.error(message);
+        }
+
+        // Clear error message
+        function clearError() {
+            const errorElement = document.getElementById('errorMessage');
+            errorElement.textContent = '';
+        }
+
+        // Fetch images with the lowest ratings (randomly pick from the lowest)
+        async function fetchImages() {
+            try {
+                clearError();
+                const { data, error } = await supabase
+                    .from('men2')  // Changed from 'men' to 'men2'
+                    .select('*')
+                    .order('rated', { ascending: true }) // Sort by the lowest rated
+                    .limit(20); // Limit to the lowest 20-rated images (can be adjusted)
+
+                if (error) {
+                    showError("Error fetching images: " + error.message);
+                    return;
+                }
+
+                if (!data || data.length < 2) {
+                    showError("Not enough images to rate. Please add more images to the database.");
+                    return;
+                }
+
+                // Select two random images from the lowest-rated ones
+                const randomIndices = getRandomIndices(data.length, 2);
+                leftImage = data[randomIndices[0]];
+                rightImage = data[randomIndices[1]];
+
+                // Set image sources
+                document.getElementById('leftImage').src = `images/${leftImage.name}`;
+                document.getElementById('rightImage').src = `images/${rightImage.name}`;
+
+                // Log retrieved images for debugging
+                console.log("Left Image:", leftImage);
+                console.log("Right Image:", rightImage);
+            } catch (err) {
+                showError("Unexpected error fetching images: " + err.message);
+            }
+        }
+
+        // Helper function to get two random indices
+        function getRandomIndices(arrayLength, numIndices) {
+            const indices = [];
+            while (indices.length < numIndices) {
+                const randomIndex = Math.floor(Math.random() * arrayLength);
+                if (!indices.includes(randomIndex)) {
+                    indices.push(randomIndex);
+                }
+            }
+            return indices;
+        }
+
+        // Function to update Elo ratings with maximum adjustments
+        async function updateElo(winner, loser) {
+            try {
+                if (!winner || !loser) {
+                    showError("Invalid images for rating");
+                    return;
+                }
+
+                const R_A = winner.elo || 1500;
+                const R_B = loser.elo || 1500;
+                const K = 30; // Base adjustment constant
+                const MAX_ADJUSTMENT = 50; // Max rating change
+
+                // Expected scores
+                const E_A = 1 / (1 + Math.pow(10, (R_B - R_A) / 400));
+                const E_B = 1 / (1 + Math.pow(10, (R_A - R_B) / 400));
+
+                // Calculate actual rating change
+                let winnerEloChange = K * (1 - E_A);
+                let loserEloChange = K * (0 - E_B);
+
+                // Apply max adjustment limits
+                winnerEloChange = Math.max(-MAX_ADJUSTMENT, Math.min(MAX_ADJUSTMENT, winnerEloChange));
+                loserEloChange = Math.max(-MAX_ADJUSTMENT, Math.min(MAX_ADJUSTMENT, loserEloChange));
+
+                // Update winner's and loser's Elo
+                const winnerElo = R_A + winnerEloChange;
+                const loserElo = R_B + loserEloChange;
+
+                // Update the winner and loser in the database
+                const { error: winnerError } = await supabase
+                    .from('men2')
+                    .update({
+                        elo: winnerElo,
+                        rated: (winner.rated || 0) + 1
+                    })
+                    .eq('id', winner.id);
+
+                const { error: loserError } = await supabase
+                    .from('men2')
+                    .update({
+                        elo: loserElo,
+                        rated: (loser.rated || 0) + 1
+                    })
+                    .eq('id', loser.id);
+
+                if (winnerError || loserError) {
+                    showError("Error updating Elo: " + (winnerError || loserError).message);
+                }
+
+                console.log(`Winner Elo: ${winner.name} (${winnerElo}), Loser Elo: ${loser.name} (${loserElo})`);
+            } catch (err) {
+                showError("Unexpected error updating Elo: " + err.message);
+            }
+        }
+
+        // Function to handle rating selection
+        async function rateImage(winner) {
+            if (!leftImage || !rightImage) {
+                showError("Please wait for images to load.");
+                return;
+            }
+
+            if (winner === 'left') {
+                await updateElo(leftImage, rightImage);
+            } else {
+                await updateElo(rightImage, leftImage);
+            }
+
+            // Fetch new images after rating
+            fetchImages();
+        }
+
+        // Add event listeners
+        document.getElementById('leftButton').addEventListener('click', () => rateImage('left'));
+        document.getElementById('rightButton').addEventListener('click', () => rateImage('right'));
+
+        // Initial fetch of images
+        fetchImages();
+    </script>
+</body>
+</html>
